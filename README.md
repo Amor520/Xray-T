@@ -16,6 +16,8 @@ This repo contains one main installer/manager script:
 
 - Default mode: `1` public port, usually `443/tcp`
 - `XRAY_STATS_MODE=xray`: adds `1` loopback-only API port, default `127.0.0.1:10085`
+- If your provider maps an external port to the container, keep `XRAY_PORT`
+  as the internal/container port and use the external port only in the client link.
 
 ## Install
 
@@ -25,6 +27,7 @@ chmod +x ./xray-reality-alpine.sh
 sudo XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
   XRAY_TOTAL_GB=100 \
+  XRAY_PORT=443 \
   XRAY_REALITY_TARGET="www.cloudflare.com:443" \
   XRAY_REALITY_SERVER_NAMES="www.cloudflare.com" \
   ./xray-reality-alpine.sh install
@@ -36,6 +39,9 @@ and `unzip`, and it does not pull in `jq`.
 The default traffic mode is `XRAY_STATS_MODE=interface`, which reads network
 interface counters and is safest on 128MB machines. If you need per-user Xray
 statistics and have enough memory, install with `XRAY_STATS_MODE=xray`.
+
+`XRAY_NETWORK` defaults to `tcp`, which is the most widely compatible value for
+VLESS + REALITY + Vision client imports.
 
 ## Useful files
 

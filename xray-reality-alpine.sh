@@ -20,6 +20,7 @@ XRAY_REALITY_TARGET="${XRAY_REALITY_TARGET:-www.cloudflare.com:443}"
 XRAY_REALITY_SERVER_NAMES="${XRAY_REALITY_SERVER_NAMES:-www.cloudflare.com}"
 XRAY_USERS="${XRAY_USERS:-user1}"
 XRAY_LISTEN="${XRAY_LISTEN:-0.0.0.0}"
+XRAY_NETWORK="${XRAY_NETWORK:-tcp}"
 XRAY_SERVICE_NAME="${XRAY_SERVICE_NAME:-xray}"
 XRAY_WATCH_SERVICE_NAME="${XRAY_WATCH_SERVICE_NAME:-xray-traffic-watch}"
 XRAY_SYNC_INTERVAL="${XRAY_SYNC_INTERVAL:-60}"
@@ -306,11 +307,11 @@ EOF
       "port": ${XRAY_PORT},
       "protocol": "vless",
       "settings": {
-        "users": ${users_json},
+        "clients": ${users_json},
         "decryption": "none"
       },
       "streamSettings": {
-        "network": "raw",
+        "network": "$(json_escape "$XRAY_NETWORK")",
         "security": "reality",
         "realitySettings": {
           "show": false,
@@ -737,6 +738,7 @@ Environment:
   XRAY_NODE_NAME="My Node"
   XRAY_TOTAL_GB=100
   XRAY_PORT=443
+  XRAY_NETWORK=tcp
   XRAY_API_PORT=10085
   XRAY_STATS_MODE=interface
   XRAY_NETDEV=optional-interface-name
