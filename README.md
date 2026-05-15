@@ -11,11 +11,13 @@ This repo contains one main installer/manager script:
 - Writes an OpenRC service for Xray.
 - Writes a second OpenRC service that refreshes traffic state every minute.
 - Exports a JSON state file for your own dashboard.
+- Optionally serves an HTTP subscription with the remaining traffic in node names.
 
 ## Ports
 
 - Default mode: `1` public port, usually `443/tcp`
 - `XRAY_STATS_MODE=xray`: adds `1` loopback-only API port, default `127.0.0.1:10085`
+- Optional subscription: `1` HTTP port, default `8080/tcp` when enabled.
 - If your provider maps an external port to the container, keep `XRAY_PORT`
   as the internal/container port and use the external port only in the client link.
 
@@ -24,13 +26,28 @@ This repo contains one main installer/manager script:
 ```sh
 busybox wget -O xray-reality-alpine.sh https://raw.githubusercontent.com/Amor520/Xray-T/main/xray-reality-alpine.sh
 chmod +x ./xray-reality-alpine.sh
+sudo ./xray-reality-alpine.sh install
+```
+
+The interactive installer asks for the node name, users, Xray port, public
+client address, and subscription port. Use `0` for the subscription port if you
+do not want HTTP subscription output.
+
+For unattended installs:
+
+```sh
 sudo XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
   XRAY_TOTAL_GB=100 \
   XRAY_PORT=443 \
+  XRAY_PUBLIC_HOST="203.0.113.10" \
+  XRAY_PUBLIC_PORT=443 \
+  XRAY_SUB_ENABLE=1 \
+  XRAY_SUB_PORT=8080 \
+  XRAY_SUB_PUBLIC_PORT=8080 \
   XRAY_REALITY_TARGET="www.cloudflare.com:443" \
   XRAY_REALITY_SERVER_NAMES="www.cloudflare.com" \
-  ./xray-reality-alpine.sh install
+  ./xray-reality-alpine.sh install --no-interactive
 ```
 
 The installer is intentionally light. On Alpine it prefers BusyBox `wget`
@@ -51,6 +68,9 @@ VLESS + REALITY + Vision client imports.
 - `/etc/xray/connection-info.txt`
 - `/var/lib/xray-board/state.json`
 - `/var/lib/xray-board/title.txt`
+- `/etc/xray/subscription-info.txt`
+- `/var/lib/xray-sub/<token>`
+- `/var/lib/xray-sub/<token>.txt`
 
 ## Dashboard output
 
@@ -79,3 +99,7 @@ The watcher writes a JSON blob like:
 ```
 
 Your own board can poll `state.json` or `title.txt` every minute.
+
+When subscription is enabled, the watcher also refreshes the subscription files
+every minute. Use the base64 URL from `/etc/xray/subscription-info.txt` for most
+clients, or the `.txt` URL for clients that prefer plain `vless://` lines.

@@ -12,7 +12,10 @@ XRAY_STATE_FILE="${XRAY_STATE_FILE:-$XRAY_BOARD_DIR/state.json}"
 XRAY_TITLE_FILE="${XRAY_TITLE_FILE:-$XRAY_BOARD_DIR/title.txt}"
 XRAY_BASELINE_FILE="${XRAY_BASELINE_FILE:-$XRAY_BOARD_DIR/baseline.env}"
 XRAY_WATCH_ENV_FILE="${XRAY_WATCH_ENV_FILE:-$XRAY_ETC_DIR/traffic-watch.env}"
+XRAY_SUB_ENV_FILE="${XRAY_SUB_ENV_FILE:-$XRAY_ETC_DIR/subscription.env}"
 XRAY_PORT="${XRAY_PORT:-443}"
+XRAY_PUBLIC_HOST="${XRAY_PUBLIC_HOST:-}"
+XRAY_PUBLIC_PORT="${XRAY_PUBLIC_PORT:-$XRAY_PORT}"
 XRAY_API_PORT="${XRAY_API_PORT:-10085}"
 XRAY_NODE_NAME="${XRAY_NODE_NAME:-Xray Node}"
 XRAY_TOTAL_GB="${XRAY_TOTAL_GB:-100}"
@@ -23,9 +26,17 @@ XRAY_LISTEN="${XRAY_LISTEN:-0.0.0.0}"
 XRAY_NETWORK="${XRAY_NETWORK:-tcp}"
 XRAY_SERVICE_NAME="${XRAY_SERVICE_NAME:-xray}"
 XRAY_WATCH_SERVICE_NAME="${XRAY_WATCH_SERVICE_NAME:-xray-traffic-watch}"
+XRAY_SUB_SERVICE_NAME="${XRAY_SUB_SERVICE_NAME:-xray-subscribe}"
 XRAY_SYNC_INTERVAL="${XRAY_SYNC_INTERVAL:-60}"
 XRAY_STATS_MODE="${XRAY_STATS_MODE:-interface}"
 XRAY_NETDEV="${XRAY_NETDEV:-}"
+XRAY_SUB_ENABLE="${XRAY_SUB_ENABLE:-0}"
+XRAY_SUB_PORT="${XRAY_SUB_PORT:-8080}"
+XRAY_SUB_PUBLIC_PORT="${XRAY_SUB_PUBLIC_PORT:-$XRAY_SUB_PORT}"
+XRAY_SUB_LISTEN="${XRAY_SUB_LISTEN:-0.0.0.0}"
+XRAY_SUB_DIR="${XRAY_SUB_DIR:-/var/lib/xray-sub}"
+XRAY_SUB_TOKEN="${XRAY_SUB_TOKEN:-}"
+XRAY_INTERACTIVE="${XRAY_INTERACTIVE:-auto}"
 
 die() {
   printf '%s\n' "[$APP_NAME] $*" >&2
@@ -87,6 +98,108 @@ install_deps() {
     return 0
   fi
   have wget || have curl || die "install wget or curl first"
+}
+
+interactive_enabled() {
+  [ "$XRAY_INTERACTIVE" != "0" ] || return 1
+  [ "$XRAY_INTERACTIVE" = "1" ] && return 0
+  [ -t 0 ]
+}
+
+prompt_default() {
+  label="$1"
+  default_value="$2"
+  answer=''
+  printf '%s [%s]: ' "$label" "$default_value" >&2
+  IFS= read -r answer || answer=''
+  if [ -n "$answer" ]; then
+    printf '%s\n' "$answer"
+  else
+    printf '%s\n' "$default_value"
+  fi
+}
+
+is_port() {
+  case "${1:-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 0 ] 2>/dev/null && [ "$1" -le 65535 ] 2>/dev/null
+}
+
+prompt_port() {
+  label="$1"
+  default_value="$2"
+  while :; do
+    value="$(prompt_default "$label" "$default_value")"
+    if is_port "$value"; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+    info "invalid port: $value"
+  done
+}
+
+detect_public_host() {
+  [ -n "$XRAY_PUBLIC_HOST" ] && {
+    printf '%s\n' "$XRAY_PUBLIC_HOST"
+    return 0
+  }
+
+  if have curl; then
+    curl -4 -fsS --max-time 4 https://api.ipify.org 2>/dev/null && return 0
+  fi
+
+  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
+    busybox wget -q -T 4 -O - https://api.ipify.org 2>/dev/null && return 0
+  fi
+
+  printf '%s\n' "YOUR_SERVER_IP"
+}
+
+ask_install_options() {
+  interactive_enabled || return 0
+
+  info "interactive install; press Enter to keep the default"
+  detected_host="$(detect_public_host || true)"
+  [ -n "$detected_host" ] || detected_host="YOUR_SERVER_IP"
+
+  XRAY_NODE_NAME="$(prompt_default "Node name" "$XRAY_NODE_NAME")"
+  XRAY_USERS="$(prompt_default "Users, comma separated" "$XRAY_USERS")"
+  XRAY_TOTAL_GB="$(prompt_default "Total quota GB" "$XRAY_TOTAL_GB")"
+  XRAY_PORT="$(prompt_port "Xray internal port" "$XRAY_PORT")"
+  XRAY_PUBLIC_HOST="$(prompt_default "Client public host/IP" "$detected_host")"
+  XRAY_PUBLIC_PORT="$(prompt_port "Client public Xray port" "$XRAY_PORT")"
+  XRAY_SUB_PORT="$(prompt_port "Subscription internal port, 0 to disable" "$XRAY_SUB_PORT")"
+
+  if [ "$XRAY_SUB_PORT" = "0" ]; then
+    XRAY_SUB_ENABLE=0
+  else
+    XRAY_SUB_ENABLE=1
+    XRAY_SUB_PUBLIC_PORT="$(prompt_port "Subscription public port" "$XRAY_SUB_PORT")"
+  fi
+}
+
+ensure_httpd() {
+  [ "$XRAY_SUB_ENABLE" = "1" ] || return 0
+
+  if have busybox && busybox --list 2>/dev/null | grep -qx httpd; then
+    return 0
+  fi
+
+  if have httpd; then
+    return 0
+  fi
+
+  if have apk; then
+    info "installing busybox-extras for httpd"
+    apk add --no-cache busybox-extras >/dev/null
+  fi
+
+  if have busybox && busybox --list 2>/dev/null | grep -qx httpd; then
+    return 0
+  fi
+
+  have httpd || die "subscription needs BusyBox httpd; install busybox-extras or set XRAY_SUB_ENABLE=0"
 }
 
 detect_asset_suffix() {
@@ -207,6 +320,27 @@ ensure_reality_keys() {
 
 generate_short_id() {
   od -An -N8 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+generate_token() {
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+ensure_sub_token() {
+  if [ -n "$XRAY_SUB_TOKEN" ]; then
+    printf '%s\n' "$XRAY_SUB_TOKEN"
+    return 0
+  fi
+
+  if [ -f "$XRAY_SUB_ENV_FILE" ]; then
+    token="$(awk -F= '/^XRAY_SUB_TOKEN=/ {print $2; exit}' "$XRAY_SUB_ENV_FILE" | sed "s/^'//; s/'$//")"
+    if [ -n "${token:-}" ]; then
+      printf '%s\n' "$token"
+      return 0
+    fi
+  fi
+
+  generate_token
 }
 
 render_users() {
@@ -380,6 +514,8 @@ XRAY_WATCH_ENV_FILE="${XRAY_WATCH_ENV_FILE:-/etc/xray/traffic-watch.env}"
 : "${XRAY_SYNC_INTERVAL:=60}"
 : "${XRAY_STATS_MODE:=interface}"
 : "${XRAY_NETDEV:=}"
+: "${XRAY_SUB_ENABLE:=0}"
+: "${XRAY_SUB_RENDER_BIN:=/usr/local/bin/xray-subscribe-render.sh}"
 
 trim() {
   printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
@@ -564,6 +700,10 @@ write_state() {
     printf '  "users": %s\n' "$users_json"
     printf '}\n'
   } > "$XRAY_STATE_FILE"
+
+  if [ "$XRAY_SUB_ENABLE" = "1" ] && [ -x "$XRAY_SUB_RENDER_BIN" ]; then
+    "$XRAY_SUB_RENDER_BIN" >/dev/null 2>&1 || true
+  fi
 }
 
 sync_once() {
@@ -617,8 +757,186 @@ render_watch_env() {
     printf 'XRAY_SYNC_INTERVAL=%s\n' "$(shell_quote "$XRAY_SYNC_INTERVAL")"
     printf 'XRAY_STATS_MODE=%s\n' "$(shell_quote "$XRAY_STATS_MODE")"
     printf 'XRAY_NETDEV=%s\n' "$(shell_quote "$XRAY_NETDEV")"
+    printf 'XRAY_SUB_ENABLE=%s\n' "$(shell_quote "$XRAY_SUB_ENABLE")"
+    printf 'XRAY_SUB_RENDER_BIN=%s\n' "$(shell_quote "/usr/local/bin/xray-subscribe-render.sh")"
   } > "$XRAY_WATCH_ENV_FILE"
   chmod 0644 "$XRAY_WATCH_ENV_FILE"
+}
+
+url_host() {
+  host="$1"
+  case "$host" in
+    \[*\]) printf '%s\n' "$host" ;;
+    *:*) printf '[%s]\n' "$host" ;;
+    *) printf '%s\n' "$host" ;;
+  esac
+}
+
+render_subscription_env() {
+  public_key="$1"
+  short_id="$2"
+  first_server_name="$(printf '%s' "$XRAY_REALITY_SERVER_NAMES" | awk -F, '{print $1}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  [ -n "$first_server_name" ] || first_server_name="www.cloudflare.com"
+
+  install -d -m 0755 "$XRAY_SUB_DIR"
+  {
+    printf 'XRAY_USERS_FILE=%s\n' "$(shell_quote "$XRAY_USERS_FILE")"
+    printf 'XRAY_TITLE_FILE=%s\n' "$(shell_quote "$XRAY_TITLE_FILE")"
+    printf 'XRAY_SUB_DIR=%s\n' "$(shell_quote "$XRAY_SUB_DIR")"
+    printf 'XRAY_SUB_TOKEN=%s\n' "$(shell_quote "$XRAY_SUB_TOKEN")"
+    printf 'XRAY_SUB_LISTEN=%s\n' "$(shell_quote "$XRAY_SUB_LISTEN")"
+    printf 'XRAY_SUB_PORT=%s\n' "$(shell_quote "$XRAY_SUB_PORT")"
+    printf 'XRAY_NODE_NAME=%s\n' "$(shell_quote "$XRAY_NODE_NAME")"
+    printf 'XRAY_PUBLIC_HOST=%s\n' "$(shell_quote "$XRAY_PUBLIC_HOST")"
+    printf 'XRAY_PUBLIC_PORT=%s\n' "$(shell_quote "$XRAY_PUBLIC_PORT")"
+    printf 'XRAY_REALITY_SERVER_NAME=%s\n' "$(shell_quote "$first_server_name")"
+    printf 'XRAY_PUBLIC_KEY=%s\n' "$(shell_quote "$public_key")"
+    printf 'XRAY_SHORT_ID=%s\n' "$(shell_quote "$short_id")"
+  } > "$XRAY_SUB_ENV_FILE"
+  chmod 0644 "$XRAY_SUB_ENV_FILE"
+}
+
+render_subscription_script() {
+  cat > /usr/local/bin/xray-subscribe-render.sh <<'EOF'
+#!/bin/sh
+set -eu
+umask 022
+
+XRAY_SUB_ENV_FILE="${XRAY_SUB_ENV_FILE:-/etc/xray/subscription.env}"
+[ -f "$XRAY_SUB_ENV_FILE" ] && . "$XRAY_SUB_ENV_FILE"
+
+: "${XRAY_USERS_FILE:=/etc/xray/users.tsv}"
+: "${XRAY_TITLE_FILE:=/var/lib/xray-board/title.txt}"
+: "${XRAY_SUB_DIR:=/var/lib/xray-sub}"
+: "${XRAY_SUB_TOKEN:=sub}"
+: "${XRAY_NODE_NAME:=Xray Node}"
+: "${XRAY_PUBLIC_HOST:=YOUR_SERVER_IP}"
+: "${XRAY_PUBLIC_PORT:=443}"
+: "${XRAY_REALITY_SERVER_NAME:=www.cloudflare.com}"
+: "${XRAY_PUBLIC_KEY:=}"
+: "${XRAY_SHORT_ID:=}"
+
+trim() {
+  printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+percent_encode_all() {
+  printf '%s' "$1" | od -An -tx1 -v | tr -d ' \n' | sed 's/../%&/g'
+}
+
+link_host() {
+  host="$1"
+  case "$host" in
+    \[*\]) printf '%s\n' "$host" ;;
+    *:*) printf '[%s]\n' "$host" ;;
+    *) printf '%s\n' "$host" ;;
+  esac
+}
+
+write_base64() {
+  src="$1"
+  dest="$2"
+  if command -v base64 >/dev/null 2>&1; then
+    base64 < "$src" | tr -d '\n' > "$dest"
+    printf '\n' >> "$dest"
+    return 0
+  fi
+  if command -v busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -qx base64; then
+    busybox base64 < "$src" | tr -d '\n' > "$dest"
+    printf '\n' >> "$dest"
+    return 0
+  fi
+  cp "$src" "$dest"
+}
+
+install -d -m 0755 "$XRAY_SUB_DIR"
+plain_file="${XRAY_SUB_DIR}/${XRAY_SUB_TOKEN}.txt"
+base64_file="${XRAY_SUB_DIR}/${XRAY_SUB_TOKEN}"
+tmp_file="${plain_file}.tmp.$$"
+host="$(link_host "$XRAY_PUBLIC_HOST")"
+base_title="$XRAY_NODE_NAME"
+[ -f "$XRAY_TITLE_FILE" ] && base_title="$(cat "$XRAY_TITLE_FILE" 2>/dev/null || printf '%s' "$XRAY_NODE_NAME")"
+user_count="$(awk -F '\t' 'NF >= 2 { c++ } END { print c + 0 }' "$XRAY_USERS_FILE" 2>/dev/null || printf '0')"
+
+: > "$tmp_file"
+while IFS="$(printf '\t')" read -r email uuid; do
+  email="$(trim "$email")"
+  uuid="$(trim "$uuid")"
+  [ -n "$email" ] || continue
+  [ -n "$uuid" ] || continue
+  title="$base_title"
+  if [ "$user_count" -gt 1 ]; then
+    title="${base_title} ${email}"
+  fi
+  remark="$(percent_encode_all "$title")"
+  printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=tcp&headerType=none&flow=xtls-rprx-vision#%s\n' \
+    "$uuid" "$host" "$XRAY_PUBLIC_PORT" "$XRAY_REALITY_SERVER_NAME" "$XRAY_PUBLIC_KEY" "$XRAY_SHORT_ID" "$remark" >> "$tmp_file"
+done < "$XRAY_USERS_FILE"
+
+mv "$tmp_file" "$plain_file"
+write_base64 "$plain_file" "$base64_file"
+chmod 0644 "$plain_file" "$base64_file"
+EOF
+  chmod 0755 /usr/local/bin/xray-subscribe-render.sh
+}
+
+render_subscription_httpd() {
+  cat > /usr/local/bin/xray-subscribe-httpd.sh <<'EOF'
+#!/bin/sh
+set -eu
+
+XRAY_SUB_ENV_FILE="${XRAY_SUB_ENV_FILE:-/etc/xray/subscription.env}"
+[ -f "$XRAY_SUB_ENV_FILE" ] && . "$XRAY_SUB_ENV_FILE"
+
+: "${XRAY_SUB_DIR:=/var/lib/xray-sub}"
+: "${XRAY_SUB_LISTEN:=0.0.0.0}"
+: "${XRAY_SUB_PORT:=8080}"
+
+if command -v busybox >/dev/null 2>&1 && busybox --list 2>/dev/null | grep -qx httpd; then
+  exec busybox httpd -f -p "${XRAY_SUB_LISTEN}:${XRAY_SUB_PORT}" -h "$XRAY_SUB_DIR"
+fi
+
+exec httpd -f -p "${XRAY_SUB_LISTEN}:${XRAY_SUB_PORT}" -h "$XRAY_SUB_DIR"
+EOF
+  chmod 0755 /usr/local/bin/xray-subscribe-httpd.sh
+}
+
+render_subscription_service() {
+  cat > /etc/init.d/xray-subscribe <<'EOF'
+#!/sbin/openrc-run
+
+description="Xray subscription http server"
+command="/usr/local/bin/xray-subscribe-httpd.sh"
+command_background="yes"
+pidfile="/run/xray-subscribe.pid"
+
+depend() {
+  need net
+}
+
+start_pre() {
+  /usr/local/bin/xray-subscribe-render.sh || return 1
+}
+EOF
+  chmod 0755 /etc/init.d/xray-subscribe
+}
+
+write_subscription_info() {
+  if [ "$XRAY_SUB_ENABLE" != "1" ]; then
+    rm -f "$XRAY_ETC_DIR/subscription-info.txt"
+    return 0
+  fi
+
+  host="$(url_host "$XRAY_PUBLIC_HOST")"
+  {
+    printf 'enabled=1\n'
+    printf 'listen=%s\n' "$XRAY_SUB_LISTEN"
+    printf 'port=%s\n' "$XRAY_SUB_PORT"
+    printf 'public_url_base64=http://%s:%s/%s\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'public_url_plain=http://%s:%s/%s.txt\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'dir=%s\n' "$XRAY_SUB_DIR"
+  } > "$XRAY_ETC_DIR/subscription-info.txt"
+  chmod 0644 "$XRAY_ETC_DIR/subscription-info.txt"
 }
 
 backup_if_exists() {
@@ -636,6 +954,8 @@ write_connection_info() {
     printf 'public_key=%s\n' "$public_key"
     printf 'short_id=%s\n' "$short_id"
     printf 'port=%s\n' "$XRAY_PORT"
+    printf 'public_host=%s\n' "$XRAY_PUBLIC_HOST"
+    printf 'public_port=%s\n' "$XRAY_PUBLIC_PORT"
     printf 'stats_mode=%s\n' "$XRAY_STATS_MODE"
     if [ "$XRAY_STATS_MODE" = "xray" ]; then
       printf 'api_port=%s\n' "$XRAY_API_PORT"
@@ -646,13 +966,25 @@ write_connection_info() {
     printf 'target=%s\n' "$XRAY_REALITY_TARGET"
     printf 'server_names=%s\n' "$XRAY_REALITY_SERVER_NAMES"
     printf 'users_file=%s\n' "$XRAY_USERS_FILE"
+    printf 'subscription_enabled=%s\n' "$XRAY_SUB_ENABLE"
+    if [ "$XRAY_SUB_ENABLE" = "1" ]; then
+      printf 'subscription_port=%s\n' "$XRAY_SUB_PORT"
+      printf 'subscription_public_port=%s\n' "$XRAY_SUB_PUBLIC_PORT"
+      printf 'subscription_token=%s\n' "$XRAY_SUB_TOKEN"
+    fi
   } > "$XRAY_ETC_DIR/connection-info.txt"
   chmod 0644 "$XRAY_ETC_DIR/connection-info.txt"
 }
 
 install_all() {
   need_root
+  ask_install_options
+  if [ "$XRAY_SUB_ENABLE" = "1" ] && [ -z "$XRAY_PUBLIC_HOST" ]; then
+    XRAY_PUBLIC_HOST="$(detect_public_host || true)"
+    [ -n "$XRAY_PUBLIC_HOST" ] || XRAY_PUBLIC_HOST="YOUR_SERVER_IP"
+  fi
   install_deps
+  ensure_httpd
   ensure_dirs
   info "checking latest release"
   download_latest_xray
@@ -666,6 +998,9 @@ install_all() {
   public_key="$(printf '%s\n' "$private_public" | sed -n '2p')"
 
   short_id="${XRAY_SHORT_ID:-$(generate_short_id)}"
+  if [ "$XRAY_SUB_ENABLE" = "1" ]; then
+    XRAY_SUB_TOKEN="$(ensure_sub_token)"
+  fi
 
   info "writing users and config"
   users_json="$(render_users)"
@@ -679,11 +1014,27 @@ install_all() {
   render_service
   render_watch_script
   render_watch_service
+  if [ "$XRAY_SUB_ENABLE" = "1" ]; then
+    info "writing subscription service"
+    render_subscription_env "$public_key" "$short_id"
+    render_subscription_script
+    render_subscription_httpd
+    render_subscription_service
+    write_subscription_info
+    /usr/local/bin/xray-subscribe-render.sh || true
+  else
+    write_subscription_info
+  fi
 
   if have rc-update; then
     info "enabling services"
     rc-update add xray default >/dev/null 2>&1 || true
     rc-update add xray-traffic-watch default >/dev/null 2>&1 || true
+    if [ "$XRAY_SUB_ENABLE" = "1" ]; then
+      rc-update add xray-subscribe default >/dev/null 2>&1 || true
+    else
+      rc-update del xray-subscribe default >/dev/null 2>&1 || true
+    fi
   fi
 
   if have rc-service; then
@@ -695,12 +1046,24 @@ install_all() {
     fi
     rc-service xray-traffic-watch stop >/dev/null 2>&1 || true
     rc-service xray-traffic-watch start
+    if [ "$XRAY_SUB_ENABLE" = "1" ]; then
+      if rc-service xray-subscribe status >/dev/null 2>&1; then
+        rc-service xray-subscribe restart
+      else
+        rc-service xray-subscribe start
+      fi
+    else
+      rc-service xray-subscribe stop >/dev/null 2>&1 || true
+    fi
   fi
 
   info "installed Xray at $XRAY_BIN"
   info "config: $XRAY_CONFIG"
   info "state:  $XRAY_STATE_FILE"
   info "public port: ${XRAY_PORT}"
+  if [ -n "$XRAY_PUBLIC_HOST" ]; then
+    info "client address: ${XRAY_PUBLIC_HOST}:${XRAY_PUBLIC_PORT}"
+  fi
   info "stats mode: ${XRAY_STATS_MODE}"
   if [ "$XRAY_STATS_MODE" = "xray" ]; then
     info "API port: 127.0.0.1:${XRAY_API_PORT}"
@@ -712,6 +1075,11 @@ install_all() {
   info "users: $XRAY_USERS_FILE"
   info "user UUIDs:"
   awk -F '\t' 'NF >= 2 { printf "  %s -> %s\n", $1, $2 }' "$XRAY_USERS_FILE"
+  if [ "$XRAY_SUB_ENABLE" = "1" ]; then
+    host="$(url_host "$XRAY_PUBLIC_HOST")"
+    info "subscription base64: http://${host}:${XRAY_SUB_PUBLIC_PORT}/${XRAY_SUB_TOKEN}"
+    info "subscription plain:  http://${host}:${XRAY_SUB_PUBLIC_PORT}/${XRAY_SUB_TOKEN}.txt"
+  fi
 }
 
 sync_once() {
@@ -729,19 +1097,25 @@ show_status() {
 usage() {
   cat <<EOF
 Usage:
-  $0 install
+  $0 install [--no-interactive]
   $0 sync
   $0 status
 
 Environment:
+  XRAY_INTERACTIVE=auto
   XRAY_USERS="alice,bob"
   XRAY_NODE_NAME="My Node"
   XRAY_TOTAL_GB=100
   XRAY_PORT=443
+  XRAY_PUBLIC_HOST=server-public-ip
+  XRAY_PUBLIC_PORT=443
   XRAY_NETWORK=tcp
   XRAY_API_PORT=10085
   XRAY_STATS_MODE=interface
   XRAY_NETDEV=optional-interface-name
+  XRAY_SUB_ENABLE=0
+  XRAY_SUB_PORT=8080
+  XRAY_SUB_PUBLIC_PORT=8080
   XRAY_REALITY_TARGET="www.cloudflare.com:443"
   XRAY_REALITY_SERVER_NAMES="www.cloudflare.com"
   XRAY_SHORT_ID=optional-short-id
@@ -749,8 +1123,16 @@ EOF
 }
 
 cmd="${1:-}"
+if [ "$#" -gt 0 ]; then
+  shift
+fi
 case "$cmd" in
-  install) install_all ;;
+  install)
+    case "${1:-}" in
+      --no-interactive|--non-interactive|-y) XRAY_INTERACTIVE=0 ;;
+    esac
+    install_all
+    ;;
   sync) need_root; sync_once ;;
   status) show_status ;;
   ""|-h|--help|help) usage ;;
