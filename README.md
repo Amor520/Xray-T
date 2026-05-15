@@ -15,13 +15,12 @@ This repo contains one main installer/manager script:
 ## Ports
 
 - Public inbound: `1` port, usually `443/tcp`
-- Local API: `1` port, loopback only, default `127.0.0.1:10085`
+- Local API: `1` loopback-only port, default `127.0.0.1:10085`, kept for optional Xray stats mode
 
 ## Install
 
 ```sh
-apk add wget
-wget -4 -O xray-reality-alpine.sh https://raw.githubusercontent.com/Amor520/Xray-T/main/xray-reality-alpine.sh
+busybox wget -O xray-reality-alpine.sh https://raw.githubusercontent.com/Amor520/Xray-T/main/xray-reality-alpine.sh
 chmod +x ./xray-reality-alpine.sh
 sudo XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
@@ -31,8 +30,12 @@ sudo XRAY_USERS="alice,bob" \
   ./xray-reality-alpine.sh install
 ```
 
-The installer is intentionally light. On Alpine it prefers `wget -4` and
-does not pull in `jq`.
+The installer is intentionally light. On Alpine it prefers BusyBox `wget`
+and `unzip`, and it does not pull in `jq`.
+
+The default traffic mode is `XRAY_STATS_MODE=interface`, which reads network
+interface counters and is safest on 128MB machines. If you need per-user Xray
+statistics and have enough memory, install with `XRAY_STATS_MODE=xray`.
 
 ## Useful files
 
@@ -52,6 +55,8 @@ The watcher writes a JSON blob like:
   "node_name": "My Node",
   "title": "My Node | 剩余 87.23 GB",
   "updated_at": "2026-05-15T00:00:00Z",
+  "stats_mode": "interface",
+  "netdev": "eth0",
   "total_quota_bytes": 107374182400,
   "total_used_bytes": 14533201920,
   "remaining_bytes": 92840980480,

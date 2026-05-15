@@ -10,6 +10,8 @@ XRAY_LOG_DIR="${XRAY_LOG_DIR:-/var/log/xray}"
 XRAY_BOARD_DIR="${XRAY_BOARD_DIR:-/var/lib/xray-board}"
 XRAY_STATE_FILE="${XRAY_STATE_FILE:-$XRAY_BOARD_DIR/state.json}"
 XRAY_TITLE_FILE="${XRAY_TITLE_FILE:-$XRAY_BOARD_DIR/title.txt}"
+XRAY_BASELINE_FILE="${XRAY_BASELINE_FILE:-$XRAY_BOARD_DIR/baseline.env}"
+XRAY_WATCH_ENV_FILE="${XRAY_WATCH_ENV_FILE:-$XRAY_ETC_DIR/traffic-watch.env}"
 XRAY_PORT="${XRAY_PORT:-443}"
 XRAY_API_PORT="${XRAY_API_PORT:-10085}"
 XRAY_NODE_NAME="${XRAY_NODE_NAME:-Xray Node}"
@@ -21,6 +23,8 @@ XRAY_LISTEN="${XRAY_LISTEN:-0.0.0.0}"
 XRAY_SERVICE_NAME="${XRAY_SERVICE_NAME:-xray}"
 XRAY_WATCH_SERVICE_NAME="${XRAY_WATCH_SERVICE_NAME:-xray-traffic-watch}"
 XRAY_SYNC_INTERVAL="${XRAY_SYNC_INTERVAL:-60}"
+XRAY_STATS_MODE="${XRAY_STATS_MODE:-interface}"
+XRAY_NETDEV="${XRAY_NETDEV:-}"
 
 die() {
   printf '%s\n' "[$APP_NAME] $*" >&2
@@ -45,6 +49,12 @@ trim() {
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r//g; s/\n/\\n/g'
+}
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
 }
 
 human_bytes() {
@@ -72,6 +82,9 @@ ensure_dirs() {
 }
 
 install_deps() {
+  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
+    return 0
+  fi
   have wget || have curl || die "install wget or curl first"
 }
 
@@ -94,27 +107,24 @@ download_url() {
   url="$1"
   dest="$2"
 
-  if have wget && wget --help 2>&1 | grep -q -- '--inet4-only'; then
-    wget -4 -O "$dest" "$url" >/dev/null 2>&1
-    return 0
+  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
+    busybox wget -O "$dest" "$url" >/dev/null 2>&1 && return 0
   fi
 
-  if have curl; then
-    curl -4 -fL -o "$dest" "$url" >/dev/null 2>&1
-    return 0
+  if have wget && wget --help 2>&1 | grep -q -- '--inet4-only'; then
+    wget -4 -O "$dest" "$url" >/dev/null 2>&1 && return 0
   fi
 
   if have wget; then
-    wget -O "$dest" "$url" >/dev/null 2>&1
-    return 0
+    wget -O "$dest" "$url" >/dev/null 2>&1 && return 0
   fi
 
-  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
-    busybox wget -O "$dest" "$url" >/dev/null 2>&1
-    return 0
+  if have curl; then
+    curl -4 -fL -o "$dest" "$url" >/dev/null 2>&1 && return 0
+    curl -fL -o "$dest" "$url" >/dev/null 2>&1 && return 0
   fi
 
-  die "need wget or curl to download files"
+  die "failed to download $url"
 }
 
 extract_zip() {
@@ -347,14 +357,20 @@ render_watch_script() {
 set -eu
 umask 022
 
-XRAY_BIN="${XRAY_BIN:-/usr/local/bin/xray}"
-XRAY_API_PORT="${XRAY_API_PORT:-10085}"
-XRAY_USERS_FILE="${XRAY_USERS_FILE:-/etc/xray/users.tsv}"
-XRAY_STATE_FILE="${XRAY_STATE_FILE:-/var/lib/xray-board/state.json}"
-XRAY_TITLE_FILE="${XRAY_TITLE_FILE:-/var/lib/xray-board/title.txt}"
-XRAY_NODE_NAME="${XRAY_NODE_NAME:-Xray Node}"
-XRAY_TOTAL_GB="${XRAY_TOTAL_GB:-100}"
-XRAY_SYNC_INTERVAL="${XRAY_SYNC_INTERVAL:-60}"
+XRAY_WATCH_ENV_FILE="${XRAY_WATCH_ENV_FILE:-/etc/xray/traffic-watch.env}"
+[ -f "$XRAY_WATCH_ENV_FILE" ] && . "$XRAY_WATCH_ENV_FILE"
+
+: "${XRAY_BIN:=/usr/local/bin/xray}"
+: "${XRAY_API_PORT:=10085}"
+: "${XRAY_USERS_FILE:=/etc/xray/users.tsv}"
+: "${XRAY_STATE_FILE:=/var/lib/xray-board/state.json}"
+: "${XRAY_TITLE_FILE:=/var/lib/xray-board/title.txt}"
+: "${XRAY_BASELINE_FILE:=/var/lib/xray-board/baseline.env}"
+: "${XRAY_NODE_NAME:=Xray Node}"
+: "${XRAY_TOTAL_GB:=100}"
+: "${XRAY_SYNC_INTERVAL:=60}"
+: "${XRAY_STATS_MODE:=interface}"
+: "${XRAY_NETDEV:=}"
 
 trim() {
   printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
@@ -402,12 +418,91 @@ query_stat() {
   printf '%s\n' "$(( ${uplink:-0} + ${downlink:-0} ))"
 }
 
-sync_once() {
+users_json_unknown() {
+  users_json='['
+  comma=''
+  while IFS="$(printf '\t')" read -r email uuid; do
+    email="$(trim "$email")"
+    uuid="$(trim "$uuid")"
+    [ -n "${email:-}" ] || continue
+    users_json="${users_json}${comma}{\"email\":\"$(json_escape "$email")\",\"uuid\":\"$(json_escape "$uuid")\",\"used_bytes\":null,\"used_human\":null,\"tracked\":false}"
+    comma=','
+  done < "$XRAY_USERS_FILE"
+  printf '%s]\n' "$users_json"
+}
+
+detect_netdev() {
+  if [ -n "$XRAY_NETDEV" ]; then
+    printf '%s\n' "$XRAY_NETDEV"
+    return 0
+  fi
+
+  if [ -r /proc/net/route ]; then
+    awk '$2 == "00000000" { print $1; exit }' /proc/net/route
+    return 0
+  fi
+
+  awk -F: 'NR > 2 { gsub(/[ \t]/, "", $1); if ($1 != "lo") { print $1; exit } }' /proc/net/dev
+}
+
+read_netdev_total() {
+  dev="$1"
+  rx_file="/sys/class/net/${dev}/statistics/rx_bytes"
+  tx_file="/sys/class/net/${dev}/statistics/tx_bytes"
+
+  if [ -r "$rx_file" ] && [ -r "$tx_file" ]; then
+    read -r rx < "$rx_file"
+    read -r tx < "$tx_file"
+    printf '%s\n' "$(( ${rx:-0} + ${tx:-0} ))"
+    return 0
+  fi
+
+  awk -v dev="$dev" -F '[: ]+' '$2 == dev { print $3 + $11; exit }' /proc/net/dev
+}
+
+baseline_value() {
+  key="$1"
+  [ -f "$XRAY_BASELINE_FILE" ] || return 0
+  awk -F= -v key="$key" '$1 == key { print $2; exit }' "$XRAY_BASELINE_FILE"
+}
+
+write_baseline() {
+  dev="$1"
+  total="$2"
+  install -d -m 0755 "$(dirname "$XRAY_BASELINE_FILE")"
+  {
+    printf 'netdev=%s\n' "$dev"
+    printf 'total=%s\n' "$total"
+  } > "$XRAY_BASELINE_FILE"
+}
+
+sync_interface() {
+  netdev="$(detect_netdev)"
+  [ -n "$netdev" ] || netdev="unknown"
+  current_total=0
+
+  if [ "$netdev" != "unknown" ]; then
+    current_total="$(read_netdev_total "$netdev")"
+  fi
+
+  baseline_netdev="$(baseline_value netdev || true)"
+  baseline_total="$(baseline_value total || true)"
+
+  if [ -z "${baseline_total:-}" ] || [ "$baseline_netdev" != "$netdev" ] || [ "$current_total" -lt "$baseline_total" ]; then
+    baseline_total="$current_total"
+    write_baseline "$netdev" "$baseline_total"
+  fi
+
+  total_used_bytes=$((current_total - baseline_total))
+  users_json="$(users_json_unknown)"
+  write_state "$total_used_bytes" "$users_json" "interface" "$netdev"
+}
+
+sync_xray() {
   if ! stats_json="$("$XRAY_BIN" api statsquery --server="127.0.0.1:${XRAY_API_PORT}" -pattern 'user>>>' 2>/dev/null)"; then
     stats_json='{"stat":[]}'
   fi
 
-  total_quota_bytes="$(awk -v gb="$XRAY_TOTAL_GB" 'BEGIN { printf "%.0f", gb * 1024 * 1024 * 1024 }')"
   total_used_bytes=0
   users_json='['
   comma=''
@@ -423,6 +518,15 @@ sync_once() {
   done < "$XRAY_USERS_FILE"
 
   users_json="${users_json}]"
+  write_state "$total_used_bytes" "$users_json" "xray" ""
+}
+
+write_state() {
+  total_used_bytes="$1"
+  users_json="$2"
+  stats_mode="$3"
+  netdev="$4"
+  total_quota_bytes="$(awk -v gb="$XRAY_TOTAL_GB" 'BEGIN { printf "%.0f", gb * 1024 * 1024 * 1024 }')"
 
   if [ "$total_used_bytes" -gt "$total_quota_bytes" ]; then
     remaining_bytes=0
@@ -442,6 +546,8 @@ sync_once() {
     printf '  "node_name": "%s",\n' "$(json_escape "$XRAY_NODE_NAME")"
     printf '  "title": "%s",\n' "$(json_escape "$title")"
     printf '  "updated_at": "%s",\n' "$(json_escape "$now")"
+    printf '  "stats_mode": "%s",\n' "$(json_escape "$stats_mode")"
+    printf '  "netdev": "%s",\n' "$(json_escape "$netdev")"
     printf '  "total_quota_bytes": %s,\n' "$total_quota_bytes"
     printf '  "total_used_bytes": %s,\n' "$total_used_bytes"
     printf '  "remaining_bytes": %s,\n' "$remaining_bytes"
@@ -449,6 +555,14 @@ sync_once() {
     printf '  "users": %s\n' "$users_json"
     printf '}\n'
   } > "$XRAY_STATE_FILE"
+}
+
+sync_once() {
+  case "$XRAY_STATS_MODE" in
+    interface) sync_interface ;;
+    xray) sync_xray ;;
+    *) XRAY_STATS_MODE=interface; sync_interface ;;
+  esac
 }
 
 if [ "${1:-}" = "--once" ]; then
@@ -481,6 +595,23 @@ EOF
   chmod 0755 /etc/init.d/xray-traffic-watch
 }
 
+render_watch_env() {
+  {
+    printf 'XRAY_BIN=%s\n' "$(shell_quote "$XRAY_BIN")"
+    printf 'XRAY_API_PORT=%s\n' "$(shell_quote "$XRAY_API_PORT")"
+    printf 'XRAY_USERS_FILE=%s\n' "$(shell_quote "$XRAY_USERS_FILE")"
+    printf 'XRAY_STATE_FILE=%s\n' "$(shell_quote "$XRAY_STATE_FILE")"
+    printf 'XRAY_TITLE_FILE=%s\n' "$(shell_quote "$XRAY_TITLE_FILE")"
+    printf 'XRAY_BASELINE_FILE=%s\n' "$(shell_quote "$XRAY_BASELINE_FILE")"
+    printf 'XRAY_NODE_NAME=%s\n' "$(shell_quote "$XRAY_NODE_NAME")"
+    printf 'XRAY_TOTAL_GB=%s\n' "$(shell_quote "$XRAY_TOTAL_GB")"
+    printf 'XRAY_SYNC_INTERVAL=%s\n' "$(shell_quote "$XRAY_SYNC_INTERVAL")"
+    printf 'XRAY_STATS_MODE=%s\n' "$(shell_quote "$XRAY_STATS_MODE")"
+    printf 'XRAY_NETDEV=%s\n' "$(shell_quote "$XRAY_NETDEV")"
+  } > "$XRAY_WATCH_ENV_FILE"
+  chmod 0644 "$XRAY_WATCH_ENV_FILE"
+}
+
 backup_if_exists() {
   path="$1"
   if [ -e "$path" ]; then
@@ -497,6 +628,8 @@ write_connection_info() {
     printf 'short_id=%s\n' "$short_id"
     printf 'port=%s\n' "$XRAY_PORT"
     printf 'api_port=%s\n' "$XRAY_API_PORT"
+    printf 'stats_mode=%s\n' "$XRAY_STATS_MODE"
+    printf 'netdev=%s\n' "$XRAY_NETDEV"
     printf 'target=%s\n' "$XRAY_REALITY_TARGET"
     printf 'server_names=%s\n' "$XRAY_REALITY_SERVER_NAMES"
     printf 'users_file=%s\n' "$XRAY_USERS_FILE"
@@ -529,6 +662,7 @@ install_all() {
   write_connection_info "$public_key" "$short_id"
 
   info "writing OpenRC services"
+  render_watch_env
   render_service
   render_watch_script
   render_watch_service
@@ -541,8 +675,13 @@ install_all() {
 
   if have rc-service; then
     info "starting services"
-    rc-service xray restart >/dev/null 2>&1 || rc-service xray start >/dev/null 2>&1 || true
-    rc-service xray-traffic-watch restart >/dev/null 2>&1 || rc-service xray-traffic-watch start >/dev/null 2>&1 || true
+    if rc-service xray status >/dev/null 2>&1; then
+      rc-service xray restart
+    else
+      rc-service xray start
+    fi
+    rc-service xray-traffic-watch stop >/dev/null 2>&1 || true
+    rc-service xray-traffic-watch start
   fi
 
   info "installed Xray at $XRAY_BIN"
@@ -550,6 +689,7 @@ install_all() {
   info "state:  $XRAY_STATE_FILE"
   info "API port: 127.0.0.1:${XRAY_API_PORT}"
   info "public port: ${XRAY_PORT}"
+  info "stats mode: ${XRAY_STATS_MODE}"
   info "public key: $public_key"
   info "short id: $short_id"
   info "users: $XRAY_USERS_FILE"
@@ -558,7 +698,7 @@ install_all() {
 }
 
 sync_once() {
-  XRAY_BIN="${XRAY_BIN}" XRAY_API_PORT="${XRAY_API_PORT}" XRAY_USERS_FILE="${XRAY_USERS_FILE}" XRAY_STATE_FILE="${XRAY_STATE_FILE}" XRAY_TITLE_FILE="${XRAY_TITLE_FILE}" XRAY_NODE_NAME="${XRAY_NODE_NAME}" XRAY_TOTAL_GB="${XRAY_TOTAL_GB}" /usr/local/bin/xray-traffic-watch.sh --once
+  XRAY_WATCH_ENV_FILE="${XRAY_WATCH_ENV_FILE}" /usr/local/bin/xray-traffic-watch.sh --once
 }
 
 show_status() {
@@ -582,6 +722,8 @@ Environment:
   XRAY_TOTAL_GB=100
   XRAY_PORT=443
   XRAY_API_PORT=10085
+  XRAY_STATS_MODE=interface
+  XRAY_NETDEV=optional-interface-name
   XRAY_REALITY_TARGET="www.cloudflare.com:443"
   XRAY_REALITY_SERVER_NAMES="www.cloudflare.com"
   XRAY_SHORT_ID=optional-short-id
