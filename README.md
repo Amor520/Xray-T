@@ -105,5 +105,9 @@ Your own board can poll `state.json` or `title.txt` every minute.
 When subscription is enabled, the watcher also refreshes the subscription files
 every minute. Use the base64 URL from `/etc/xray/subscription-info.txt` for most
 clients, or the `.txt` URL for clients that prefer plain `vless://` lines.
+The public subscription URLs are served through a tiny CGI endpoint that adds a
+`Subscription-Userinfo` response header, so Sub-Store and compatible clients can
+show traffic usage. Static fallback URLs are also written to
+`/etc/xray/subscription-info.txt`.
 The installer also prints direct `vless://` import links and stores them in
 `/etc/xray/share-links.txt`.

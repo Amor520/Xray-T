@@ -805,6 +805,7 @@ render_subscription_env() {
   install -d -m 0755 "$XRAY_SUB_DIR"
   {
     printf 'XRAY_USERS_FILE=%s\n' "$(shell_quote "$XRAY_USERS_FILE")"
+    printf 'XRAY_STATE_FILE=%s\n' "$(shell_quote "$XRAY_STATE_FILE")"
     printf 'XRAY_TITLE_FILE=%s\n' "$(shell_quote "$XRAY_TITLE_FILE")"
     printf 'XRAY_SUB_DIR=%s\n' "$(shell_quote "$XRAY_SUB_DIR")"
     printf 'XRAY_SUB_TOKEN=%s\n' "$(shell_quote "$XRAY_SUB_TOKEN")"
@@ -925,6 +926,87 @@ EOF
   chmod 0755 /usr/local/bin/xray-subscribe-httpd.sh
 }
 
+render_subscription_cgi() {
+  cat > /usr/local/bin/xray-subscribe-cgi.sh <<'EOF'
+#!/bin/sh
+set -eu
+umask 022
+
+XRAY_SUB_ENV_FILE="${XRAY_SUB_ENV_FILE:-/etc/xray/subscription.env}"
+[ -f "$XRAY_SUB_ENV_FILE" ] && . "$XRAY_SUB_ENV_FILE"
+
+: "${XRAY_STATE_FILE:=/var/lib/xray-board/state.json}"
+: "${XRAY_SUB_DIR:=/var/lib/xray-sub}"
+: "${XRAY_SUB_TOKEN:=sub}"
+: "${XRAY_EXPIRE_TIMESTAMP:=0}"
+: "${XRAY_SUB_RENDER_BIN:=/usr/local/bin/xray-subscribe-render.sh}"
+
+json_number() {
+  key="$1"
+  default_value="$2"
+  [ -f "$XRAY_STATE_FILE" ] || {
+    printf '%s\n' "$default_value"
+    return 0
+  }
+  value="$(awk -v key="$key" '
+    $0 ~ "\"" key "\"" {
+      line=$0
+      sub(/^[^:]*:[[:space:]]*/, "", line)
+      sub(/[,[:space:]].*$/, "", line)
+      gsub(/[^0-9]/, "", line)
+      print line
+      exit
+    }
+  ' "$XRAY_STATE_FILE")"
+  [ -n "${value:-}" ] || value="$default_value"
+  printf '%s\n' "$value"
+}
+
+serve_file() {
+  path="$1"
+  content_type="$2"
+
+  if [ ! -f "$path" ] && [ -x "$XRAY_SUB_RENDER_BIN" ]; then
+    "$XRAY_SUB_RENDER_BIN" >/dev/null 2>&1 || true
+  fi
+
+  if [ ! -f "$path" ]; then
+    printf 'Status: 404 Not Found\r\n'
+    printf 'Content-Type: text/plain\r\n'
+    printf '\r\n'
+    printf 'subscription not found\n'
+    return 0
+  fi
+
+  used_bytes="$(json_number total_used_bytes 0)"
+  total_bytes="$(json_number total_quota_bytes 0)"
+  printf 'Content-Type: %s\r\n' "$content_type"
+  printf 'Cache-Control: no-store\r\n'
+  printf 'Profile-Update-Interval: 1\r\n'
+  printf 'Subscription-Userinfo: upload=0; download=%s; total=%s; expire=%s\r\n' "$used_bytes" "$total_bytes" "$XRAY_EXPIRE_TIMESTAMP"
+  printf '\r\n'
+  cat "$path"
+}
+
+case "${REQUEST_URI:-}${SCRIPT_NAME:-}" in
+  *.txt*) serve_file "${XRAY_SUB_DIR}/${XRAY_SUB_TOKEN}.txt" "text/plain; charset=utf-8" ;;
+  *) serve_file "${XRAY_SUB_DIR}/${XRAY_SUB_TOKEN}" "text/plain; charset=utf-8" ;;
+esac
+EOF
+  chmod 0755 /usr/local/bin/xray-subscribe-cgi.sh
+
+  install -d -m 0755 "$XRAY_SUB_DIR/cgi-bin"
+  cat > "$XRAY_SUB_DIR/cgi-bin/$XRAY_SUB_TOKEN" <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/xray-subscribe-cgi.sh
+EOF
+  cat > "$XRAY_SUB_DIR/cgi-bin/${XRAY_SUB_TOKEN}.txt" <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/xray-subscribe-cgi.sh
+EOF
+  chmod 0755 "$XRAY_SUB_DIR/cgi-bin/$XRAY_SUB_TOKEN" "$XRAY_SUB_DIR/cgi-bin/${XRAY_SUB_TOKEN}.txt"
+}
+
 render_subscription_service() {
   cat > /etc/init.d/xray-subscribe <<'EOF'
 #!/sbin/openrc-run
@@ -956,8 +1038,11 @@ write_subscription_info() {
     printf 'enabled=1\n'
     printf 'listen=%s\n' "$XRAY_SUB_LISTEN"
     printf 'port=%s\n' "$XRAY_SUB_PORT"
-    printf 'public_url_base64=http://%s:%s/%s\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
-    printf 'public_url_plain=http://%s:%s/%s.txt\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'public_url_base64=http://%s:%s/cgi-bin/%s\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'public_url_plain=http://%s:%s/cgi-bin/%s.txt\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'static_url_base64=http://%s:%s/%s\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'static_url_plain=http://%s:%s/%s.txt\n' "$host" "$XRAY_SUB_PUBLIC_PORT" "$XRAY_SUB_TOKEN"
+    printf 'traffic_header=Subscription-Userinfo\n'
     printf 'dir=%s\n' "$XRAY_SUB_DIR"
   } > "$XRAY_ETC_DIR/subscription-info.txt"
   chmod 0644 "$XRAY_ETC_DIR/subscription-info.txt"
@@ -1069,6 +1154,7 @@ install_all() {
     render_subscription_env "$public_key" "$short_id"
     render_subscription_script
     render_subscription_httpd
+    render_subscription_cgi
     render_subscription_service
     write_subscription_info
     /usr/local/bin/xray-subscribe-render.sh || true
@@ -1129,8 +1215,9 @@ install_all() {
   awk '{ printf "  %s\n", $0 }' "$XRAY_SHARE_LINKS_FILE"
   if [ "$XRAY_SUB_ENABLE" = "1" ]; then
     host="$(url_host "$XRAY_PUBLIC_HOST")"
-    info "subscription base64: http://${host}:${XRAY_SUB_PUBLIC_PORT}/${XRAY_SUB_TOKEN}"
-    info "subscription plain:  http://${host}:${XRAY_SUB_PUBLIC_PORT}/${XRAY_SUB_TOKEN}.txt"
+    info "subscription base64: http://${host}:${XRAY_SUB_PUBLIC_PORT}/cgi-bin/${XRAY_SUB_TOKEN}"
+    info "subscription plain:  http://${host}:${XRAY_SUB_PUBLIC_PORT}/cgi-bin/${XRAY_SUB_TOKEN}.txt"
+    info "subscription traffic header: Subscription-Userinfo"
   fi
 }
 
