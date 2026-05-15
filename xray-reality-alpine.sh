@@ -178,13 +178,13 @@ ask_install_options() {
   [ -n "$detected_host" ] || detected_host="YOUR_SERVER_IP"
 
   XRAY_NODE_NAME="$(prompt_default "节点名称" "$XRAY_NODE_NAME")"
+  XRAY_TOTAL_GB="$(prompt_default "总流量(GB)" "$XRAY_TOTAL_GB")"
   XRAY_USERS="$(prompt_default "用户列表，多个用英文逗号分隔" "$XRAY_USERS")"
-  XRAY_TOTAL_GB="$(prompt_default "总流量 GB" "$XRAY_TOTAL_GB")"
   XRAY_PORT="$(prompt_port "Xray 容器内端口" "$XRAY_PORT")"
   XRAY_PUBLIC_HOST="$(prompt_default "公网 IP 或域名" "$detected_host")"
   XRAY_PUBLIC_PORT="$(prompt_port "Xray 公网端口" "$XRAY_PORT")"
 
-  if prompt_yes_no "是否开启订阅链接" "n"; then
+  if prompt_yes_no "是否开启订阅链接" "y"; then
     XRAY_SUB_ENABLE=1
     XRAY_SUB_PORT="$(prompt_port "订阅容器内端口" "$XRAY_SUB_PORT")"
     XRAY_SUB_PUBLIC_PORT="$(prompt_port "订阅公网端口" "$XRAY_SUB_PORT")"

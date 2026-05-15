@@ -30,9 +30,9 @@ chmod +x ./xray-reality-alpine.sh
 ```
 
 The interactive installer uses Chinese prompts and keeps the question list
-short. It asks for the node name, users, quota, Xray internal/public port, and
-whether to enable an HTTP subscription. Subscription ports are only asked when
-subscription is enabled.
+short. It asks for the node name, quota, users, Xray internal/public port, and
+whether to enable an HTTP subscription. Subscription is enabled by default in
+interactive mode, and subscription ports are only asked when it is enabled.
 
 For unattended installs:
 
