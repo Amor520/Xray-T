@@ -28,7 +28,7 @@ die() {
 }
 
 info() {
-  printf '%s\n' "[$APP_NAME] $*"
+  printf '%s\n' "[$APP_NAME] $*" >&2
 }
 
 need_root() {
