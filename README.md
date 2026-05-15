@@ -15,9 +15,9 @@ This repo contains one main installer/manager script:
 
 ## Ports
 
-- Default mode: `1` public port, usually `443/tcp`
+- Default mode: `1` public port, default `33332/tcp`
 - `XRAY_STATS_MODE=xray`: adds `1` loopback-only API port, default `127.0.0.1:10085`
-- Optional subscription: `1` HTTP port, default `8080/tcp` when enabled.
+- Optional subscription: `1` HTTP port, default `33333/tcp` when enabled.
 - If your provider maps an external port to the container, keep `XRAY_PORT`
   as the internal/container port and use the external port only in the client link.
 
@@ -40,12 +40,12 @@ For unattended installs:
 XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
   XRAY_TOTAL_GB=100 \
-  XRAY_PORT=443 \
+  XRAY_PORT=33332 \
   XRAY_PUBLIC_HOST="203.0.113.10" \
-  XRAY_PUBLIC_PORT=443 \
+  XRAY_PUBLIC_PORT=33332 \
   XRAY_SUB_ENABLE=1 \
-  XRAY_SUB_PORT=8080 \
-  XRAY_SUB_PUBLIC_PORT=8080 \
+  XRAY_SUB_PORT=33333 \
+  XRAY_SUB_PUBLIC_PORT=33333 \
   XRAY_REALITY_TARGET="www.cloudflare.com:443" \
   XRAY_REALITY_SERVER_NAMES="www.cloudflare.com" \
   ./xray-reality-alpine.sh install --no-interactive
