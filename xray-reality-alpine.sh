@@ -179,6 +179,15 @@ ask_install_options() {
 
   XRAY_NODE_NAME="$(prompt_default "节点名称" "$XRAY_NODE_NAME")"
   XRAY_TOTAL_GB="$(prompt_default "总流量(GB)" "$XRAY_TOTAL_GB")"
+
+  if prompt_yes_no "后续选项是否全部使用默认值" "y"; then
+    XRAY_PUBLIC_HOST="$detected_host"
+    XRAY_PUBLIC_PORT="$XRAY_PORT"
+    XRAY_SUB_ENABLE=1
+    XRAY_SUB_PUBLIC_PORT="$XRAY_SUB_PORT"
+    return 0
+  fi
+
   XRAY_USERS="$(prompt_default "用户列表，多个用英文逗号分隔" "$XRAY_USERS")"
   XRAY_PORT="$(prompt_port "Xray 容器内端口" "$XRAY_PORT")"
   XRAY_PUBLIC_HOST="$(prompt_default "公网 IP 或域名" "$detected_host")"
