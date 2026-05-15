@@ -14,8 +14,8 @@ This repo contains one main installer/manager script:
 
 ## Ports
 
-- Public inbound: `1` port, usually `443/tcp`
-- Local API: `1` loopback-only port, default `127.0.0.1:10085`, kept for optional Xray stats mode
+- Default mode: `1` public port, usually `443/tcp`
+- `XRAY_STATS_MODE=xray`: adds `1` loopback-only API port, default `127.0.0.1:10085`
 
 ## Install
 

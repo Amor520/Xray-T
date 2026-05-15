@@ -265,6 +265,10 @@ render_config() {
     "access": "/dev/null",
     "error": "$XRAY_LOG_DIR/error.log"
   },
+EOF
+
+  if [ "$XRAY_STATS_MODE" = "xray" ]; then
+    cat >> "$XRAY_CONFIG" <<EOF
   "stats": {},
   "api": {
     "tag": "api",
@@ -291,6 +295,10 @@ render_config() {
       "statsOutboundDownlink": false
     }
   },
+EOF
+  fi
+
+  cat >> "$XRAY_CONFIG" <<EOF
   "inbounds": [
     {
       "tag": "reality-in",
@@ -627,8 +635,12 @@ write_connection_info() {
     printf 'public_key=%s\n' "$public_key"
     printf 'short_id=%s\n' "$short_id"
     printf 'port=%s\n' "$XRAY_PORT"
-    printf 'api_port=%s\n' "$XRAY_API_PORT"
     printf 'stats_mode=%s\n' "$XRAY_STATS_MODE"
+    if [ "$XRAY_STATS_MODE" = "xray" ]; then
+      printf 'api_port=%s\n' "$XRAY_API_PORT"
+    else
+      printf 'api_port=disabled\n'
+    fi
     printf 'netdev=%s\n' "$XRAY_NETDEV"
     printf 'target=%s\n' "$XRAY_REALITY_TARGET"
     printf 'server_names=%s\n' "$XRAY_REALITY_SERVER_NAMES"
@@ -687,9 +699,13 @@ install_all() {
   info "installed Xray at $XRAY_BIN"
   info "config: $XRAY_CONFIG"
   info "state:  $XRAY_STATE_FILE"
-  info "API port: 127.0.0.1:${XRAY_API_PORT}"
   info "public port: ${XRAY_PORT}"
   info "stats mode: ${XRAY_STATS_MODE}"
+  if [ "$XRAY_STATS_MODE" = "xray" ]; then
+    info "API port: 127.0.0.1:${XRAY_API_PORT}"
+  else
+    info "API port: disabled"
+  fi
   info "public key: $public_key"
   info "short id: $short_id"
   info "users: $XRAY_USERS_FILE"
