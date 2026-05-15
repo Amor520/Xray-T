@@ -135,7 +135,20 @@ prompt_port() {
       printf '%s\n' "$value"
       return 0
     fi
-    info "invalid port: $value"
+    info "端口无效：$value"
+  done
+}
+
+prompt_yes_no() {
+  label="$1"
+  default_value="$2"
+  while :; do
+    value="$(prompt_default "$label" "$default_value")"
+    case "$value" in
+      y|Y|yes|YES|Yes|是|开启|開啟) return 0 ;;
+      n|N|no|NO|No|否|关闭|關閉) return 1 ;;
+      *) info "请输入 y 或 n" ;;
+    esac
   done
 }
 
@@ -159,23 +172,24 @@ detect_public_host() {
 ask_install_options() {
   interactive_enabled || return 0
 
-  info "interactive install; press Enter to keep the default"
+  info "交互式安装：直接回车使用默认值"
   detected_host="$(detect_public_host || true)"
   [ -n "$detected_host" ] || detected_host="YOUR_SERVER_IP"
 
-  XRAY_NODE_NAME="$(prompt_default "Node name" "$XRAY_NODE_NAME")"
-  XRAY_USERS="$(prompt_default "Users, comma separated" "$XRAY_USERS")"
-  XRAY_TOTAL_GB="$(prompt_default "Total quota GB" "$XRAY_TOTAL_GB")"
-  XRAY_PORT="$(prompt_port "Xray internal port" "$XRAY_PORT")"
-  XRAY_PUBLIC_HOST="$(prompt_default "Client public host/IP" "$detected_host")"
-  XRAY_PUBLIC_PORT="$(prompt_port "Client public Xray port" "$XRAY_PORT")"
-  XRAY_SUB_PORT="$(prompt_port "Subscription internal port, 0 to disable" "$XRAY_SUB_PORT")"
+  XRAY_NODE_NAME="$(prompt_default "节点名称" "$XRAY_NODE_NAME")"
+  XRAY_USERS="$(prompt_default "用户列表，多个用英文逗号分隔" "$XRAY_USERS")"
+  XRAY_TOTAL_GB="$(prompt_default "总流量 GB" "$XRAY_TOTAL_GB")"
+  XRAY_PORT="$(prompt_port "Xray 容器内端口" "$XRAY_PORT")"
+  XRAY_PUBLIC_HOST="$(prompt_default "公网 IP 或域名" "$detected_host")"
+  XRAY_PUBLIC_PORT="$(prompt_port "Xray 公网端口" "$XRAY_PORT")"
 
-  if [ "$XRAY_SUB_PORT" = "0" ]; then
-    XRAY_SUB_ENABLE=0
-  else
+  if prompt_yes_no "是否开启订阅链接" "n"; then
     XRAY_SUB_ENABLE=1
-    XRAY_SUB_PUBLIC_PORT="$(prompt_port "Subscription public port" "$XRAY_SUB_PORT")"
+    XRAY_SUB_PORT="$(prompt_port "订阅容器内端口" "$XRAY_SUB_PORT")"
+    XRAY_SUB_PUBLIC_PORT="$(prompt_port "订阅公网端口" "$XRAY_SUB_PORT")"
+  else
+    XRAY_SUB_ENABLE=0
+    XRAY_SUB_PORT=0
   fi
 }
 

@@ -29,9 +29,10 @@ chmod +x ./xray-reality-alpine.sh
 sudo ./xray-reality-alpine.sh install
 ```
 
-The interactive installer asks for the node name, users, Xray port, public
-client address, and subscription port. Use `0` for the subscription port if you
-do not want HTTP subscription output.
+The interactive installer uses Chinese prompts and keeps the question list
+short. It asks for the node name, users, quota, Xray internal/public port, and
+whether to enable an HTTP subscription. Subscription ports are only asked when
+subscription is enabled.
 
 For unattended installs:
 
