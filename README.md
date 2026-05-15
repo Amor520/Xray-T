@@ -20,6 +20,8 @@ This repo contains one main installer/manager script:
 ## Install
 
 ```sh
+apk add wget
+wget -4 -O xray-reality-alpine.sh https://raw.githubusercontent.com/Amor520/Xray-T/main/xray-reality-alpine.sh
 chmod +x ./xray-reality-alpine.sh
 sudo XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
@@ -29,8 +31,8 @@ sudo XRAY_USERS="alice,bob" \
   ./xray-reality-alpine.sh install
 ```
 
-The installer is intentionally light. On Alpine it prefers the `busybox`
-`wget` and `unzip` applets and does not pull in `jq`.
+The installer is intentionally light. On Alpine it prefers `wget -4` and
+does not pull in `jq`.
 
 ## Useful files
 

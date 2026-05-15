@@ -72,7 +72,7 @@ ensure_dirs() {
 }
 
 install_deps() {
-  have busybox || die "busybox is required"
+  have wget || have curl || die "install wget or curl first"
 }
 
 detect_asset_suffix() {
@@ -94,8 +94,13 @@ download_url() {
   url="$1"
   dest="$2"
 
-  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
-    busybox wget -O "$dest" "$url" >/dev/null 2>&1
+  if have wget && wget --help 2>&1 | grep -q -- '--inet4-only'; then
+    wget -4 -O "$dest" "$url" >/dev/null 2>&1
+    return 0
+  fi
+
+  if have curl; then
+    curl -4 -fL -o "$dest" "$url" >/dev/null 2>&1
     return 0
   fi
 
@@ -104,8 +109,8 @@ download_url() {
     return 0
   fi
 
-  if have curl; then
-    curl -fL -o "$dest" "$url" >/dev/null 2>&1
+  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
+    busybox wget -O "$dest" "$url" >/dev/null 2>&1
     return 0
   fi
 
