@@ -67,6 +67,7 @@ VLESS + REALITY + Vision client imports.
 - `/etc/xray/users.tsv`
 - `/etc/xray/reality.keys`
 - `/etc/xray/connection-info.txt`
+- `/etc/xray/share-links.txt`
 - `/var/lib/xray-board/state.json`
 - `/var/lib/xray-board/title.txt`
 - `/etc/xray/subscription-info.txt`
@@ -104,3 +105,5 @@ Your own board can poll `state.json` or `title.txt` every minute.
 When subscription is enabled, the watcher also refreshes the subscription files
 every minute. Use the base64 URL from `/etc/xray/subscription-info.txt` for most
 clients, or the `.txt` URL for clients that prefer plain `vless://` lines.
+The installer also prints direct `vless://` import links and stores them in
+`/etc/xray/share-links.txt`.

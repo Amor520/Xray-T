@@ -6,6 +6,7 @@ XRAY_BIN="${XRAY_BIN:-/usr/local/bin/xray}"
 XRAY_ETC_DIR="${XRAY_ETC_DIR:-/etc/xray}"
 XRAY_CONFIG="${XRAY_CONFIG:-$XRAY_ETC_DIR/config.json}"
 XRAY_USERS_FILE="${XRAY_USERS_FILE:-$XRAY_ETC_DIR/users.tsv}"
+XRAY_SHARE_LINKS_FILE="${XRAY_SHARE_LINKS_FILE:-$XRAY_ETC_DIR/share-links.txt}"
 XRAY_LOG_DIR="${XRAY_LOG_DIR:-/var/log/xray}"
 XRAY_BOARD_DIR="${XRAY_BOARD_DIR:-/var/lib/xray-board}"
 XRAY_STATE_FILE="${XRAY_STATE_FILE:-$XRAY_BOARD_DIR/state.json}"
@@ -786,11 +787,20 @@ url_host() {
   esac
 }
 
+percent_encode_all() {
+  printf '%s' "$1" | od -An -tx1 -v | tr -d ' \n' | sed 's/../%&/g'
+}
+
+first_reality_server_name() {
+  first_server_name="$(printf '%s' "$XRAY_REALITY_SERVER_NAMES" | awk -F, '{print $1}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  [ -n "$first_server_name" ] || first_server_name="www.cloudflare.com"
+  printf '%s\n' "$first_server_name"
+}
+
 render_subscription_env() {
   public_key="$1"
   short_id="$2"
-  first_server_name="$(printf '%s' "$XRAY_REALITY_SERVER_NAMES" | awk -F, '{print $1}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  [ -n "$first_server_name" ] || first_server_name="www.cloudflare.com"
+  first_server_name="$(first_reality_server_name)"
 
   install -d -m 0755 "$XRAY_SUB_DIR"
   {
@@ -953,6 +963,30 @@ write_subscription_info() {
   chmod 0644 "$XRAY_ETC_DIR/subscription-info.txt"
 }
 
+write_share_links() {
+  public_key="$1"
+  short_id="$2"
+  host="$(url_host "$XRAY_PUBLIC_HOST")"
+  server_name="$(first_reality_server_name)"
+  user_count="$(awk -F '\t' 'NF >= 2 { c++ } END { print c + 0 }' "$XRAY_USERS_FILE" 2>/dev/null || printf '0')"
+
+  : > "$XRAY_SHARE_LINKS_FILE"
+  while IFS="$(printf '\t')" read -r email uuid; do
+    email="$(trim "$email")"
+    uuid="$(trim "$uuid")"
+    [ -n "$email" ] || continue
+    [ -n "$uuid" ] || continue
+    title="$XRAY_NODE_NAME"
+    if [ "$user_count" -gt 1 ]; then
+      title="${XRAY_NODE_NAME} ${email}"
+    fi
+    remark="$(percent_encode_all "$title")"
+    printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&type=%s&headerType=none&flow=xtls-rprx-vision#%s\n' \
+      "$uuid" "$host" "$XRAY_PUBLIC_PORT" "$server_name" "$public_key" "$short_id" "$XRAY_NETWORK" "$remark" >> "$XRAY_SHARE_LINKS_FILE"
+  done < "$XRAY_USERS_FILE"
+  chmod 0644 "$XRAY_SHARE_LINKS_FILE"
+}
+
 backup_if_exists() {
   path="$1"
   if [ -e "$path" ]; then
@@ -980,6 +1014,7 @@ write_connection_info() {
     printf 'target=%s\n' "$XRAY_REALITY_TARGET"
     printf 'server_names=%s\n' "$XRAY_REALITY_SERVER_NAMES"
     printf 'users_file=%s\n' "$XRAY_USERS_FILE"
+    printf 'share_links_file=%s\n' "$XRAY_SHARE_LINKS_FILE"
     printf 'subscription_enabled=%s\n' "$XRAY_SUB_ENABLE"
     if [ "$XRAY_SUB_ENABLE" = "1" ]; then
       printf 'subscription_port=%s\n' "$XRAY_SUB_PORT"
@@ -993,7 +1028,7 @@ write_connection_info() {
 install_all() {
   need_root
   ask_install_options
-  if [ "$XRAY_SUB_ENABLE" = "1" ] && [ -z "$XRAY_PUBLIC_HOST" ]; then
+  if [ -z "$XRAY_PUBLIC_HOST" ]; then
     XRAY_PUBLIC_HOST="$(detect_public_host || true)"
     [ -n "$XRAY_PUBLIC_HOST" ] || XRAY_PUBLIC_HOST="YOUR_SERVER_IP"
   fi
@@ -1021,6 +1056,7 @@ install_all() {
 
   backup_if_exists "$XRAY_CONFIG"
   render_config "$private_key" "$short_id" "$users_json"
+  write_share_links "$public_key" "$short_id"
   write_connection_info "$public_key" "$short_id"
 
   info "writing OpenRC services"
@@ -1089,6 +1125,8 @@ install_all() {
   info "users: $XRAY_USERS_FILE"
   info "user UUIDs:"
   awk -F '\t' 'NF >= 2 { printf "  %s -> %s\n", $1, $2 }' "$XRAY_USERS_FILE"
+  info "direct vless links:"
+  awk '{ printf "  %s\n", $0 }' "$XRAY_SHARE_LINKS_FILE"
   if [ "$XRAY_SUB_ENABLE" = "1" ]; then
     host="$(url_host "$XRAY_PUBLIC_HOST")"
     info "subscription base64: http://${host}:${XRAY_SUB_PUBLIC_PORT}/${XRAY_SUB_TOKEN}"
