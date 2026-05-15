@@ -72,7 +72,7 @@ ensure_dirs() {
 }
 
 install_deps() {
-  have curl || die "curl is required"
+  have busybox || die "busybox is required"
 }
 
 detect_asset_suffix() {
@@ -88,6 +88,28 @@ detect_asset_suffix() {
 
 have_busybox_unzip() {
   have busybox && busybox --list 2>/dev/null | grep -qx unzip
+}
+
+download_url() {
+  url="$1"
+  dest="$2"
+
+  if have busybox && busybox --list 2>/dev/null | grep -qx wget; then
+    busybox wget -O "$dest" "$url" >/dev/null 2>&1
+    return 0
+  fi
+
+  if have wget; then
+    wget -O "$dest" "$url" >/dev/null 2>&1
+    return 0
+  fi
+
+  if have curl; then
+    curl -fL -o "$dest" "$url" >/dev/null 2>&1
+    return 0
+  fi
+
+  die "need wget or curl to download files"
 }
 
 extract_zip() {
@@ -116,7 +138,7 @@ download_latest_xray() {
   asset_url="https://github.com/XTLS/Xray-core/releases/latest/download/${asset_name}"
 
   info "downloading latest Xray (${asset_name})"
-  curl -fL --progress-bar -o "$tmpdir/xray.zip" "$asset_url"
+  download_url "$asset_url" "$tmpdir/xray.zip"
   info "extracting Xray binary"
   extract_zip "$tmpdir/xray.zip" "$tmpdir/unpacked"
 
