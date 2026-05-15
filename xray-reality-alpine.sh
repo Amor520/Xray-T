@@ -157,8 +157,8 @@ download_latest_xray() {
 
 parse_x25519_output() {
   output="$1"
-  private="$(printf '%s\n' "$output" | awk -F': *' '/^Private[[:space:]]*key$|^PrivateKey$/ {print $2; exit}')"
-  public="$(printf '%s\n' "$output" | awk -F': *' '/^Public[[:space:]]*key$|^Password/ {print $2; exit}')"
+  private="$(printf '%s\n' "$output" | awk -F': *' '/^(Private[[:space:]]*key|PrivateKey):/ {print $2; exit}')"
+  public="$(printf '%s\n' "$output" | awk -F': *' '/^(Public[[:space:]]*key|PublicKey|Password)/ {print $2; exit}')"
   [ -n "${private:-}" ] || die "failed to parse x25519 private key"
   [ -n "${public:-}" ] || die "failed to parse x25519 public key"
   printf '%s\n%s\n' "$private" "$public"
@@ -169,19 +169,25 @@ ensure_reality_keys() {
   if [ -f "$key_file" ]; then
     private_key="$(awk -F= '/^private=/ {print $2; exit}' "$key_file")"
     public_key="$(awk -F= '/^public=/ {print $2; exit}' "$key_file")"
-  else
-    info "generating Reality keypair"
-    output="$("$XRAY_BIN" x25519)"
-    parsed="$(parse_x25519_output "$output")"
-    private_key="$(printf '%s\n' "$parsed" | sed -n '1p')"
-    public_key="$(printf '%s\n' "$parsed" | sed -n '2p')"
-    umask 077
-    {
-      printf 'private=%s\n' "$private_key"
-      printf 'public=%s\n' "$public_key"
-    } > "$key_file"
-    chmod 0600 "$key_file"
+    if [ -n "${private_key:-}" ] && [ -n "${public_key:-}" ]; then
+      printf '%s\n%s\n' "$private_key" "$public_key"
+      return 0
+    fi
+    info "existing Reality key file is incomplete; regenerating"
+    rm -f "$key_file"
   fi
+
+  info "generating Reality keypair"
+  output="$("$XRAY_BIN" x25519)"
+  parsed="$(parse_x25519_output "$output")"
+  private_key="$(printf '%s\n' "$parsed" | sed -n '1p')"
+  public_key="$(printf '%s\n' "$parsed" | sed -n '2p')"
+  umask 077
+  {
+    printf 'private=%s\n' "$private_key"
+    printf 'public=%s\n' "$public_key"
+  } > "$key_file"
+  chmod 0600 "$key_file"
 
   [ -n "${private_key:-}" ] || die "missing reality private key"
   [ -n "${public_key:-}" ] || die "missing reality public key"
