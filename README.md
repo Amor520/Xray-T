@@ -26,7 +26,7 @@ This repo contains one main installer/manager script:
 ```sh
 busybox wget -O xray-reality-alpine.sh https://raw.githubusercontent.com/Amor520/Xray-T/main/xray-reality-alpine.sh
 chmod +x ./xray-reality-alpine.sh
-sudo ./xray-reality-alpine.sh install
+./xray-reality-alpine.sh install
 ```
 
 The interactive installer uses Chinese prompts and keeps the question list
@@ -37,7 +37,7 @@ subscription is enabled.
 For unattended installs:
 
 ```sh
-sudo XRAY_USERS="alice,bob" \
+XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
   XRAY_TOTAL_GB=100 \
   XRAY_PORT=443 \
