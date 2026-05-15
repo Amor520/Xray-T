@@ -20,6 +20,7 @@ This repo contains one main installer/manager script:
 ## Install
 
 ```sh
+apk add curl
 chmod +x ./xray-reality-alpine.sh
 sudo XRAY_USERS="alice,bob" \
   XRAY_NODE_NAME="My Node" \
@@ -28,6 +29,9 @@ sudo XRAY_USERS="alice,bob" \
   XRAY_REALITY_SERVER_NAMES="www.cloudflare.com" \
   ./xray-reality-alpine.sh install
 ```
+
+The installer is intentionally light. On Alpine it prefers the `busybox`
+`unzip` applet and does not pull in `jq`.
 
 ## Useful files
 

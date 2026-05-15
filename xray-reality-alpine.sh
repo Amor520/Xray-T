@@ -72,8 +72,7 @@ ensure_dirs() {
 }
 
 install_deps() {
-  have apk || die "this installer currently targets Alpine Linux"
-  apk add --no-cache curl jq unzip ca-certificates >/dev/null
+  have curl || die "curl is required"
 }
 
 detect_asset_suffix() {
@@ -87,37 +86,52 @@ detect_asset_suffix() {
   esac
 }
 
-latest_release_json() {
-  curl -fsSL "https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+have_busybox_unzip() {
+  have busybox && busybox --list 2>/dev/null | grep -qx unzip
+}
+
+extract_zip() {
+  zip_file="$1"
+  dest_dir="$2"
+
+  if have_busybox_unzip; then
+    busybox unzip -o "$zip_file" xray -d "$dest_dir" >/dev/null
+    return 0
+  fi
+
+  if have unzip; then
+    unzip -o -q "$zip_file" xray -d "$dest_dir"
+    return 0
+  fi
+
+  die "need unzip support; on Alpine, busybox usually provides it, otherwise install unzip"
 }
 
 download_latest_xray() {
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "$tmpdir"' EXIT INT TERM
 
-  release_json="$(latest_release_json)"
-  tag_name="$(printf '%s\n' "$release_json" | jq -r '.tag_name')"
-  [ -n "$tag_name" ] && [ "$tag_name" != "null" ] || die "failed to read latest Xray tag"
-
   suffix="$(detect_asset_suffix)"
   asset_name="Xray-linux-${suffix}.zip"
-  asset_url="$(printf '%s\n' "$release_json" | jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' | head -n 1)"
-  [ -n "$asset_url" ] && [ "$asset_url" != "null" ] || die "could not find asset ${asset_name}"
+  asset_url="https://github.com/XTLS/Xray-core/releases/latest/download/${asset_name}"
 
-  info "downloading Xray ${tag_name} (${asset_name})"
-  curl -fsSL -o "$tmpdir/xray.zip" "$asset_url"
-  unzip -o -q "$tmpdir/xray.zip" -d "$tmpdir/unpacked"
+  info "downloading latest Xray (${asset_name})"
+  curl -fL --progress-bar -o "$tmpdir/xray.zip" "$asset_url"
+  info "extracting Xray binary"
+  extract_zip "$tmpdir/xray.zip" "$tmpdir/unpacked"
 
   install -d -m 0755 /usr/local/share/xray
   install -m 0755 "$tmpdir/unpacked/xray" "$XRAY_BIN"
-  [ -f "$tmpdir/unpacked/geoip.dat" ] && install -m 0644 "$tmpdir/unpacked/geoip.dat" /usr/local/share/xray/geoip.dat
-  [ -f "$tmpdir/unpacked/geosite.dat" ] && install -m 0644 "$tmpdir/unpacked/geosite.dat" /usr/local/share/xray/geosite.dat
+
+  if ! "$XRAY_BIN" version >/dev/null 2>&1; then
+    die "downloaded Xray binary exists but cannot execute on this system"
+  fi
 }
 
 parse_x25519_output() {
   output="$1"
   private="$(printf '%s\n' "$output" | awk -F': *' '/^Private[[:space:]]*key$|^PrivateKey$/ {print $2; exit}')"
-  public="$(printf '%s\n' "$output" | awk -F': *' '/^Public[[:space:]]*key$|^Password$/ {print $2; exit}')"
+  public="$(printf '%s\n' "$output" | awk -F': *' '/^Public[[:space:]]*key$|^Password/ {print $2; exit}')"
   [ -n "${private:-}" ] || die "failed to parse x25519 private key"
   [ -n "${public:-}" ] || die "failed to parse x25519 public key"
   printf '%s\n%s\n' "$private" "$public"
@@ -129,6 +143,7 @@ ensure_reality_keys() {
     private_key="$(awk -F= '/^private=/ {print $2; exit}' "$key_file")"
     public_key="$(awk -F= '/^public=/ {print $2; exit}' "$key_file")"
   else
+    info "generating Reality keypair"
     output="$("$XRAY_BIN" x25519)"
     parsed="$(parse_x25519_output "$output")"
     private_key="$(printf '%s\n' "$parsed" | sed -n '1p')"
@@ -312,6 +327,10 @@ trim() {
   printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r//g; s/\n/\\n/g'
+}
+
 human_bytes() {
   awk -v b="${1:-0}" 'BEGIN {
     split("B KB MB GB TB PB", unit, " ");
@@ -321,12 +340,33 @@ human_bytes() {
   }'
 }
 
+stat_value() {
+  target="$1"
+  stats_json="$2"
+  printf '%s\n' "$stats_json" | sed 's/[{},]/\n/g' | awk -v target="$target" '
+    $0 ~ /"name"[[:space:]]*:/ {
+      line=$0
+      sub(/^.*"name"[[:space:]]*:[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      current=line
+    }
+    current == target && $0 ~ /"value"[[:space:]]*:/ {
+      line=$0
+      sub(/^.*"value"[[:space:]]*:[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      gsub(/[^0-9]/, "", line)
+      print line
+      exit
+    }
+  '
+}
+
 query_stat() {
   email="$1"
   stats_json="$2"
-  printf '%s\n' "$stats_json" | jq -r --arg email "$email" '
-    [ .stat[]? | select(.name == ("user>>>" + $email + ">>>traffic>>>uplink") or .name == ("user>>>" + $email + ">>>traffic>>>downlink")) | (.value // 0) ] | add // 0
-  '
+  uplink="$(stat_value "user>>>${email}>>>traffic>>>uplink" "$stats_json")"
+  downlink="$(stat_value "user>>>${email}>>>traffic>>>downlink" "$stats_json")"
+  printf '%s\n' "$(( ${uplink:-0} + ${downlink:-0} ))"
 }
 
 sync_once() {
@@ -364,25 +404,18 @@ sync_once() {
   install -d -m 0755 "$(dirname "$XRAY_STATE_FILE")"
   printf '%s\n' "$title" > "$XRAY_TITLE_FILE"
 
-  jq -n \
-    --arg node_name "$XRAY_NODE_NAME" \
-    --arg title "$title" \
-    --arg updated_at "$now" \
-    --argjson total_quota_bytes "$total_quota_bytes" \
-    --argjson total_used_bytes "$total_used_bytes" \
-    --argjson remaining_bytes "$remaining_bytes" \
-    --arg remaining_human "$remaining_human" \
-    --argjson users "$users_json" \
-    '{
-      node_name: $node_name,
-      title: $title,
-      updated_at: $updated_at,
-      total_quota_bytes: $total_quota_bytes,
-      total_used_bytes: $total_used_bytes,
-      remaining_bytes: $remaining_bytes,
-      remaining_human: $remaining_human,
-      users: $users
-    }' > "$XRAY_STATE_FILE"
+  {
+    printf '{\n'
+    printf '  "node_name": "%s",\n' "$(json_escape "$XRAY_NODE_NAME")"
+    printf '  "title": "%s",\n' "$(json_escape "$title")"
+    printf '  "updated_at": "%s",\n' "$(json_escape "$now")"
+    printf '  "total_quota_bytes": %s,\n' "$total_quota_bytes"
+    printf '  "total_used_bytes": %s,\n' "$total_used_bytes"
+    printf '  "remaining_bytes": %s,\n' "$remaining_bytes"
+    printf '  "remaining_human": "%s",\n' "$(json_escape "$remaining_human")"
+    printf '  "users": %s\n' "$users_json"
+    printf '}\n'
+  } > "$XRAY_STATE_FILE"
 }
 
 if [ "${1:-}" = "--once" ]; then
@@ -442,6 +475,7 @@ install_all() {
   need_root
   install_deps
   ensure_dirs
+  info "checking latest release"
   download_latest_xray
 
   if ! have rc-update; then
@@ -454,22 +488,26 @@ install_all() {
 
   short_id="${XRAY_SHORT_ID:-$(generate_short_id)}"
 
+  info "writing users and config"
   users_json="$(render_users)"
 
   backup_if_exists "$XRAY_CONFIG"
   render_config "$private_key" "$short_id" "$users_json"
   write_connection_info "$public_key" "$short_id"
 
+  info "writing OpenRC services"
   render_service
   render_watch_script
   render_watch_service
 
   if have rc-update; then
+    info "enabling services"
     rc-update add xray default >/dev/null 2>&1 || true
     rc-update add xray-traffic-watch default >/dev/null 2>&1 || true
   fi
 
   if have rc-service; then
+    info "starting services"
     rc-service xray restart >/dev/null 2>&1 || rc-service xray start >/dev/null 2>&1 || true
     rc-service xray-traffic-watch restart >/dev/null 2>&1 || rc-service xray-traffic-watch start >/dev/null 2>&1 || true
   fi
